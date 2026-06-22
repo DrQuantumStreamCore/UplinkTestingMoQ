@@ -1,0 +1,3 @@
+# Extra deps for the tools/ scripts (on top of the root requirements.txt)
+scapy        # tools/pcap_to_dataset.py
+aioquic      # tools/moq_quic_transmit.py (real QUIC transmission)

@@ -83,6 +83,14 @@ def train_models(epochs=500):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="MoQ uplink test for StreamCore")
+    ap.add_argument("--trace", default=None,
+                    help="path to a measured per-window Mbps .npy "
+                         "(e.g. from tools/moq_quic_transmit.py); "
+                         "otherwise uses the synthetic MoQ traffic model")
+    args = ap.parse_args()
+
     if not os.path.exists("./net_model_dataset/ran/input_dataset.pkl"):
         print("No dataset found -- run tools/generate_synthetic_dataset.py first.")
         sys.exit(2)
@@ -91,8 +99,13 @@ def main():
     print("Training per-VNF models on synthetic data ...")
     slice_model = train_models()
 
-    target = 12.0
-    trace = moq_uplink_trace(target_mbps=target)
+    if args.trace:
+        trace = np.load(args.trace)
+        target = float(trace.mean())
+        print(f"Using MEASURED trace {args.trace} ({len(trace)} windows)")
+    else:
+        target = 12.0
+        trace = moq_uplink_trace(target_mbps=target)
     res = [200, 20, 1500]   # UPF cpu, OvS bw, RAN cpu (stored order)
 
     print("\n=== MoQ uplink trace ===")

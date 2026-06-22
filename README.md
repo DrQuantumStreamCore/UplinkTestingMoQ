@@ -197,5 +197,36 @@ python tools/moq_uplink_test.py
 
 Drives the slice with a MoQ-like **uplink** traffic model (object/group cadence,
 key-object bursts, uplink-heavy) and exercises the uplink slice path + allocator.
-It is a traffic-model simulation, not a live MoQ/QUIC stack — swap in testbed
-captures for production figures.
+It is a traffic-model simulation — for real packets see the next section.
+
+### Real QUIC transmission
+
+```bash
+python tools/moq_quic_transmit.py --seconds 2 --target-mbps 12 --out moq_real.npy
+python tools/moq_uplink_test.py --trace moq_real.npy
+```
+
+`moq_quic_transmit.py` opens an actual **QUIC** connection (aioquic, loopback)
+and pushes MoQ-style media objects **uplink** — one unidirectional stream per
+object, key-object bursts per group — with the receiver timestamping every
+object. It writes a measured per-window Mbps trace (real QUIC framing / pacing /
+congestion control; no sudo or pcap needed). Feed that trace into
+`moq_uplink_test.py --trace` to drive the StreamCore uplink allocator from a
+real transmission instead of the synthetic model.
+
+### pcap → dataset bridge
+
+```bash
+# measured offered-load trace from a real capture
+python tools/pcap_to_dataset.py capture.pcap --uplink-src 10.0.0.0/24 \
+    --emit moq-trace --out offered.npy
+# or write a VNF input dataset (supply --egress-pcap for real output labels)
+python tools/pcap_to_dataset.py capture.pcap --emit dataset --vnf ran \
+    --out-dir net_model_dataset
+```
+
+Converts a testbed packet capture into StreamCore traffic profiles (windowed
+packet_size / packet_rate / throughput / inter-arrival stats). A pcap gives the
+**offered load** (input features); a VNF transfer function (resource → served
+throughput / latency) still needs testbed instrumentation, so single-pcap output
+labels are a clearly-marked passthrough placeholder.

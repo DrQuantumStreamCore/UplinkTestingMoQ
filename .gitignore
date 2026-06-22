@@ -9,3 +9,6 @@ net_model_dataset/
 data/
 *.pkl
 piplog.txt
+
+.DS_Store
+.pr_body.md

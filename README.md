@@ -218,15 +218,25 @@ real transmission instead of the synthetic model.
 
 ```bash
 # measured offered-load trace from a real capture
-python tools/pcap_to_dataset.py capture.pcap --uplink-src 10.0.0.0/24 \
+# offered-load trace from a single capture
+python tools/pcap_to_dataset.py ingress.pcap --uplink-src 10.0.0.0/24 \
     --emit moq-trace --out offered.npy
-# or write a VNF input dataset (supply --egress-pcap for real output labels)
-python tools/pcap_to_dataset.py capture.pcap --emit dataset --vnf ran \
+
+# REAL per-VNF transfer function from ingress + egress captures
+python tools/pcap_to_dataset.py ingress.pcap --egress-pcap egress.pcap \
+    --uplink-src 10.0.0.0/24 --emit dataset --vnf ran --res 1500 \
     --out-dir net_model_dataset
 ```
 
-Converts a testbed packet capture into StreamCore traffic profiles (windowed
-packet_size / packet_rate / throughput / inter-arrival stats). A pcap gives the
-**offered load** (input features); a VNF transfer function (resource → served
-throughput / latency) still needs testbed instrumentation, so single-pcap output
-labels are a clearly-marked passthrough placeholder.
+Converts testbed captures into StreamCore datasets (windowed packet_size /
+packet_rate / throughput / inter-arrival stats).
+
+- A single pcap gives the **offered load** (input features); the output is a
+  clearly-marked passthrough placeholder.
+- With `--egress-pcap`, ingress and egress packets are **correlated** per packet
+  (payload hash, which a forwarding VNF preserves) to measure **served
+  throughput, latency (`time_in_sys`) and loss** — a genuine transfer function.
+  Tag each capture with the resource the VNF had via `--res`, run captures at
+  several `--res` values, and concatenate to build a training set the slice
+  model can learn resource sensitivity from. This is the path from testbed
+  captures to production-grade StreamCore numbers.

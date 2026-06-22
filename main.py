@@ -63,7 +63,7 @@ ran_model = VNF_Model(vnf_typ='ran',
                       n_hidden=[64, 32, 16],
                       n_outputs=5)
 ran_model = ran_model.to(device)
-train_loss, val_loss = ran_model.train(ran_data_gen, num_epochs=10000, batch_size=256)
+train_loss, val_loss = ran_model.fit(ran_data_gen, num_epochs=10000, batch_size=256)
 ran_model.plot_loss()
 # ran_model.load_weights('./data/saved_weights/ran/model.pth')
 
@@ -72,7 +72,7 @@ ovs_model = VNF_Model(vnf_typ='ovs',
                       n_hidden=[64, 32, 16],
                       n_outputs=5)
 ovs_model = ovs_model.to(device)
-train_loss, val_loss = ovs_model.train(ovs_data_gen, num_epochs=10000, batch_size=512)
+train_loss, val_loss = ovs_model.fit(ovs_data_gen, num_epochs=10000, batch_size=512)
 ovs_model.plot_loss()
 # ovs_model.load_weights('./data/saved_weights/ovs/model.pth')
 
@@ -81,7 +81,7 @@ upf_model = VNF_Model(vnf_typ='upf',
                       n_hidden=[32, 16],
                       n_outputs=5)
 upf_model = upf_model.to(device)
-train_loss, val_loss = upf_model.train(upf_data_gen, num_epochs=5000, batch_size=512)
+train_loss, val_loss = upf_model.fit(upf_data_gen, num_epochs=5000, batch_size=512)
 upf_model.plot_loss()
 # upf_model.load_weights('./data/saved_weights/upf/model.pth')
 

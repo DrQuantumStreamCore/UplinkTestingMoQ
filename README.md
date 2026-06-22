@@ -157,3 +157,45 @@ This will:
 3. Create a slice model
 4. Perform resource allocation optimization
 5. Display the results
+
+## Running without the published testbed dataset
+
+The repository does **not** ship the `net_model_dataset/` pickles, so `main.py`
+cannot run out of the box. A schema-correct **synthetic** dataset generator is
+provided so the full pipeline is runnable and testable. It is a smoke/integration
+dataset (output throughput is a saturating function of offered load and the VNF
+resource) — not real testbed measurements.
+
+```bash
+python tools/generate_synthetic_dataset.py   # writes net_model_dataset/{ran,ovs,upf}
+python tools/smoke_test.py                    # end-to-end: load -> train -> predict -> allocate
+```
+
+`smoke_test.py` exits non-zero on failure, so it can gate CI. To use real data,
+drop testbed-derived pickles (e.g. `pcap -> dataset`) into `net_model_dataset/`
+matching the same schema and skip the generator.
+
+## Uplink direction
+
+`SliceModel.predict_throughput(...)` and `allocate_resources(...)` accept a
+`direction` argument:
+
+- `direction='downlink'` (default) — VNF chain in stored order (UPF → OvS → RAN,
+  i.e. core → edge → radio).
+- `direction='uplink'` — chain reversed (RAN → OvS → UPF, i.e. device → radio →
+  core). Uplink is increasingly the congestion point for AI / interactive media
+  (contribution / "see-what-I-see"), so the slice must be composable and
+  optimisable in this direction.
+
+`res` is always aligned to the stored VNF order regardless of direction.
+
+## MoQ (Media over QUIC) uplink test
+
+```bash
+python tools/moq_uplink_test.py
+```
+
+Drives the slice with a MoQ-like **uplink** traffic model (object/group cadence,
+key-object bursts, uplink-heavy) and exercises the uplink slice path + allocator.
+It is a traffic-model simulation, not a live MoQ/QUIC stack — swap in testbed
+captures for production figures.

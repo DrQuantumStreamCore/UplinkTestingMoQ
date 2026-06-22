@@ -1,0 +1,11 @@
+# envs
+.venv/
+myenv/
+__pycache__/
+*.pyc
+
+# generated data & artifacts
+net_model_dataset/
+data/
+*.pkl
+piplog.txt

@@ -37,57 +37,94 @@ class SliceModel:
 
         return vnf_output
 
-    def predict_throughput(self, res, input_throughput, differentiable=False, res_normalized=True, verbose=False):
+    def predict_throughput(self, res, input_throughput, differentiable=False, res_normalized=True,
+                           verbose=False, direction='downlink'):
+        """Predict end-to-end throughput through the slice.
+
+        direction:
+            'downlink' (default) processes the VNFs in their stored order
+                (UPF -> OvS -> RAN, i.e. core -> edge -> radio).
+            'uplink' processes them in reverse (RAN -> OvS -> UPF, i.e.
+                device -> radio -> edge -> core). Uplink is increasingly the
+                congested direction for AI / interactive media traffic, so the
+                slice must be composable in this order.
+        `res` is always aligned to the stored VNF order regardless of direction.
+        """
         # Ensure 'res' is a list of resource values, denormalizing if needed
         if isinstance(res, torch.Tensor):
             res = res.clone().squeeze()
+        n = len(self.vnf_models)
         if res_normalized:
             # Convert each resource in `res` to a denormalized float
-            res = [float(self.data_gens[i].denormalize(res[i], feature_type='input', feature='res')) for i in range(3)]
-        # print(input_throughput)
-        
+            res = [float(self.data_gens[i].denormalize(res[i], feature_type='input', feature='res')) for i in range(n)]
+
+        if direction == 'downlink':
+            order = list(range(n))
+        elif direction == 'uplink':
+            order = list(range(n))[::-1]
+        else:
+            raise ValueError(f"direction must be 'downlink' or 'uplink', got {direction!r}")
+
         # Initialize throughput for the first VNF processing
         predicted_output = None
         throughput = input_throughput
-        
+
         if verbose:
-            print(f"Input throughput: {input_throughput}")
-        # Iterate through each VNF model and corresponding data generator
-        for vnf_num, (vnf_model, data_gen) in enumerate(zip(self.vnf_models, self.data_gens)):
+            print(f"[{direction}] Input throughput: {input_throughput}")
+        # Iterate through the VNF chain in the order dictated by `direction`
+        for step, vnf_num in enumerate(order):
+            vnf_model, data_gen = self.vnf_models[vnf_num], self.data_gens[vnf_num]
             # Prepare the input data for this VNF based on its resource allocation and throughput
-            input_data = self._prepare_input_data(predicted_output, vnf_num, data_gen, throughput, res)
+            input_data = self._prepare_input_data(predicted_output, step == 0, data_gen, throughput, res[vnf_num])
 
             # Pass the data through normalization, prediction, and denormalization stages
             normalized_input = data_gen.normalize(input_data, feature_type='input')
             predicted_output = vnf_model.predict(normalized_input, mean_val=True)
             denormalized_output = data_gen.denormalize(predicted_output, feature_type='output')
 
-            # Update throughput with the output of this VNF, used as input for the next VNF
-            throughput = denormalized_output[0, 2]  # Selecting throughput value in the output
+            # Update throughput with the output of this VNF, used as input for the next VNF.
+            # Clamp to be non-negative: throughput is a physical quantity and the
+            # regression head can otherwise emit small negative values that then
+            # propagate (and break the allocator's feasibility logic).
+            throughput = torch.clamp(denormalized_output[0, 2], min=0.0)
             if verbose:
-                print(f"Throughput after VNF {vnf_num}: {throughput}")
+                print(f"Throughput after VNF idx {vnf_num} (chain step {step}): {throughput}")
         if verbose:
             print("--------------------------------")
         # Return the final throughput, applying a cap if not differentiable
-        return min(throughput.item(), input_throughput) if not differentiable else throughput
+        if differentiable:
+            return torch.clamp(throughput, max=float(input_throughput))
+        return max(0.0, min(throughput.item(), input_throughput))
 
 
-    def _prepare_input_data(self, output_features, vnf_num, data_gen, throughput, res):
-        """Helper function to prepare input data for a specific VNF model."""
-        if vnf_num == 0:
+    def _prepare_input_data(self, output_features, is_first, data_gen, throughput, res_val):
+        """Helper function to prepare input data for a specific VNF model.
+
+        is_first: True for the first VNF in the chain (builds the feature row
+        from the nearest-neighbour traffic profile); False otherwise (chains the
+        previous VNF's output and appends this VNF's resource value).
+        """
+        if is_first:
+            # Clamp the offered load to the range the model was trained on; the
+            # regression can't extrapolate, and get_nearest_neighbor() returns
+            # None outside [min, max] (which previously crashed the slice).
+            lo = float(data_gen.input_dataset['throughput'].min())
+            hi = float(data_gen.input_dataset['throughput'].max())
+            throughput = min(max(float(throughput), lo), hi)
             data_sample = data_gen.get_nearest_neighbor(throughput)
             if data_sample is None:
                 return None
-            data_sample['res'] = res[vnf_num]
             data_sample = [
                 data_sample['packet_size'],
                 (throughput * 1e6) / (8 * data_sample['packet_size']),
                 throughput,
                 data_sample['inter_arrival_time_mean'],
                 data_sample['inter_arrival_time_std'],
-                res[vnf_num]
+                res_val
             ]
-            return torch.tensor(data_sample).to(device).unsqueeze(0)
+            # dtype=float32 to match the rest of the pipeline (numpy scalars from
+            # the nearest neighbour are float64 and would otherwise mismatch on cat).
+            return torch.tensor(data_sample, dtype=torch.float).to(device).unsqueeze(0)
         else:
-            res_tensor = torch.tensor([res[vnf_num]]).unsqueeze(1).to(device)
+            res_tensor = torch.tensor([res_val], dtype=torch.float).unsqueeze(1).to(device)
             return torch.cat((output_features.to(device), res_tensor), dim=1)

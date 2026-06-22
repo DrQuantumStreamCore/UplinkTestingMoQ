@@ -148,7 +148,7 @@ class VNF_Model(nn.Module):
             return dist.rsample()
 
     # Training Loop ##############################################################################################
-    def train(self, data_gen, batch_size=128, num_epochs=5000, learning_rate=0.0001, decay=0.00, save_model=True, save_loss=True):
+    def fit(self, data_gen, batch_size=128, num_epochs=5000, learning_rate=0.0001, decay=0.00, save_model=True, save_loss=True):
         """
         Train the model using the provided data generator.
 

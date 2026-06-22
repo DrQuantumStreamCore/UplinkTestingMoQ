@@ -20,12 +20,20 @@ class ResAllocModel(nn.Module):
     def forward(self, x):
         return self.activation(self.fc_layer(x))
 
-def allocate_resources(slice_model, input_throughput, qos_threshold, learning_rate=0.001, init_weights=None, verbose=False):
+def allocate_resources(slice_model, input_throughput, qos_threshold, learning_rate=0.001, init_weights=None, verbose=False, direction='downlink'):
+    start_time = time.time()
     if qos_threshold > input_throughput:
         print("QoS threshold is greater than input throughput")
         return None, None, None, None, time.time() - start_time
     # Initial solution
-    res_alloc_init = get_initial_solution(slice_model, input_throughput, qos_threshold)
+    res_alloc_init = get_initial_solution(slice_model, input_throughput, qos_threshold, direction=direction)
+    if res_alloc_init is None:
+        # No grid point met the QoS target -> fall back to the max-resource
+        # allocation so the optimiser still has a feasible starting point
+        # instead of crashing on a None.
+        if verbose:
+            print("No feasible grid point found; starting from max allocation")
+        res_alloc_init = np.array([1.0, 1.0, 1.0], dtype=np.float32)
     init_weights = torch.tensor(np.log(res_alloc_init / (1 - res_alloc_init + 1e-6)))
     # print(nn.Sigmoid()(init_weights))
 
@@ -44,7 +52,7 @@ def allocate_resources(slice_model, input_throughput, qos_threshold, learning_ra
         if verbose: print(f"Iteration {iteration}")
 
         # Perform inner loop (gradient descent) within primal-dual algorithm
-        res_alloc, qos, loss = inner_loop(model, optimizer, slice_model, input_throughput, qos_threshold, penalty, epochs, iteration, verbose)
+        res_alloc, qos, loss = inner_loop(model, optimizer, slice_model, input_throughput, qos_threshold, penalty, epochs, iteration, verbose, direction)
         
         # print(f"QoS: {qos}, Loss: {loss}")
         # Update feasibility bounds
@@ -60,17 +68,28 @@ def allocate_resources(slice_model, input_throughput, qos_threshold, learning_ra
             if verbose: print("Optimization complete")
             break
 
+    if feasible_allocation is None:
+        # No allocation satisfied the QoS target within the iteration/time budget.
+        # Return the max-resource allocation and its achieved throughput so callers
+        # get a usable (if infeasible) result instead of a None that crashes
+        # downstream denormalisation.
+        max_alloc = np.array([[1.0, 1.0, 1.0]], dtype=np.float32)
+        achieved = slice_model.predict_throughput(
+            torch.tensor(max_alloc.flatten()), input_throughput, differentiable=False, direction=direction)
+        if verbose:
+            print(f"No feasible allocation within budget; returning max allocation (qos={achieved:.2f})")
+        return max_alloc, achieved, upper_bound, lower_bound, time.time() - start_time
     if feasible_qos > qos_threshold:
         feasible_qos = qos_threshold
     return feasible_allocation, feasible_qos, upper_bound, lower_bound, time.time() - start_time
 
 # Inner Loop for Gradient Descent #############################################################
 
-def inner_loop(model, optimizer, slice_model, input_throughput, qos_threshold, penalty, epochs, iteration,verbose):
+def inner_loop(model, optimizer, slice_model, input_throughput, qos_threshold, penalty, epochs, iteration, verbose, direction='downlink'):
     for epoch in range(epochs):
         optimizer.zero_grad()
         res_alloc = model(torch.ones((1, 1)).to(device))
-        qos = slice_model.predict_throughput(res_alloc, input_throughput, differentiable=True)
+        qos = slice_model.predict_throughput(res_alloc, input_throughput, differentiable=True, direction=direction)
         constraint_violation = qos_threshold - qos
         loss = calculate_loss(res_alloc, penalty, constraint_violation)
         loss.backward()
@@ -124,18 +143,26 @@ def adjust_penalty(penalty, qos, qos_threshold, penalty_step):
 
 def stop_conditions_met(feasible_qos, qos_threshold, start_time, max_time, iteration, max_iterations):
     # print("abs(feasible_qos - qos_threshold): ", abs(feasible_qos - qos_threshold), "time: ", time.time() - start_time, "iteration: ", iteration)
-    return (abs(feasible_qos - qos_threshold) < 0.5 or
-            time.time() - start_time > max_time or 
+    qos_close = feasible_qos is not None and abs(feasible_qos - qos_threshold) < 0.5
+    return (qos_close or
+            time.time() - start_time > max_time or
             iteration > max_iterations)
 
 # Slice Model Interaction: Grid Search for Initialization #####################################
 
-def get_initial_solution(slice_model, input_throughput, qos_threshold):
+def get_initial_solution(slice_model, input_throughput, qos_threshold, direction='downlink'):
     best_allocation, min_res_alloc_sum = None, float('inf')
-    for ovs in np.arange(0, 1, 0.1):
-        for ran in np.arange(0, 1, 0.1):
+    # Include the upper bound (1.0) in the grid so the full-resource allocation
+    # is actually evaluated; np.arange(0, 1, 0.1) stops at 0.9.
+    grid = np.arange(0, 1.0 + 1e-9, 0.1)
+    for ovs in grid:
+        for ran in grid:
             res_alloc = torch.tensor([1, ovs, ran], dtype=torch.float32)
-            qos = slice_model.predict_throughput(res_alloc, input_throughput, differentiable=True)
+            qos = slice_model.predict_throughput(res_alloc, input_throughput, differentiable=True, direction=direction)
             if qos > qos_threshold and res_alloc.sum() < min_res_alloc_sum:
                 best_allocation, min_res_alloc_sum = res_alloc, res_alloc.sum()
+    if best_allocation is None:
+        # No allocation in the grid satisfied the QoS target. Return None so the
+        # caller can fall back gracefully rather than crashing here.
+        return None
     return best_allocation.detach().cpu().numpy()
